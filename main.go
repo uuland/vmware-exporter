@@ -1,13 +1,17 @@
 package main
 
 import (
-	"./controller"
+	"context"
 	"flag"
-	"fmt"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	log "github.com/sirupsen/logrus"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	log "github.com/sirupsen/logrus"
+
+	"vmware-exporter/pkg"
 )
 
 var (
@@ -18,72 +22,18 @@ var (
 	logLevel = "info"
 )
 
-func env(key, def string) string {
-	if x := os.Getenv(key); x != "" {
-		return x
-	}
-	return def
-}
-
-func init() {
-	flag.StringVar(&listen, "listen", env("ESX_LISTEN", listen), "listen port")
-	flag.StringVar(&host, "host", env("ESX_HOST", host), "URL ESX host ")
-	flag.StringVar(&username, "username", env("ESX_USERNAME", username), "User for ESX")
-	flag.StringVar(&password, "password", env("ESX_PASSWORD", password), "password for ESX")
-	flag.StringVar(&logLevel, "log", env("ESX_LOG", logLevel), "Log level must be, debug or info")
-	flag.Parse()
-	controllers.RegistredMetrics()
-	collectMetrics()
-}
-
-func collectMetrics() {
-	logger, err := initLogger()
-	if err != nil {
-		fmt.Println(err.Error())
-	}
-	go func() {
-		logger.Debugf("Start collect host metrics")
-		controllers.NewVmwareHostMetrics(host, username, password, logger)
-		logger.Debugf("End collect host metrics")
-	}()
-	go func() {
-		logger.Debugf("Start collect datastore metrics")
-		controllers.NewVmwareDsMetrics(host, username, password, logger)
-		logger.Debugf("End collect datastore metrics")
-	}()
-	go func() {
-		logger.Debugf("Start collect VM metrics")
-		controllers.NewVmwareVmMetrics(host, username, password, logger)
-		logger.Debugf("End collect VM metrics")
-	}()
-}
-
-func handler(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		collectMetrics()
-	}
-	h := promhttp.Handler()
-	h.ServeHTTP(w, r)
-}
-
-func initLogger() (*log.Logger, error) {
-	logger := log.New()
-	logrusLogLevel, err := log.ParseLevel(logLevel)
-	if err != nil {
-		return logger, err
-	}
-	logger.SetLevel(logrusLogLevel)
-	logger.Formatter = &log.TextFormatter{DisableTimestamp: false, FullTimestamp: true}
-	return logger, nil
-}
-
 func main() {
-	logger, err := initLogger()
-	if err != nil {
-		logger.Fatal(err)
-	}
+	flag.StringVar(&listen, "listen", env("ESX_LISTEN", listen), "listen port")
+	flag.StringVar(&host, "host", env("ESX_HOST", host), "ESX host addr")
+	flag.StringVar(&username, "username", env("ESX_USERNAME", username), "user for ESX")
+	flag.StringVar(&password, "password", env("ESX_PASSWORD", password), "password for ESX")
+	flag.StringVar(&logLevel, "logLevel", env("ESX_LOG", logLevel), "Log level")
+	flag.Parse()
+
+	logger := initLogger()
+
 	if host == "" {
-		logger.Fatal("Yor must configured systemm env ESX_HOST or key -host")
+		logger.Fatal("Yor must configured system env ESX_HOST or key -host")
 	}
 	if username == "" {
 		logger.Fatal("Yor must configured system env ESX_USERNAME or key -username")
@@ -91,11 +41,31 @@ func main() {
 	if password == "" {
 		logger.Fatal("Yor must configured system env ESX_PASSWORD or key -password")
 	}
-	msg := fmt.Sprintf("Exporter start on port %s", listen)
-	logger.Info(msg)
-	http.HandleFunc("/metrics", handler)
+
+	cli, err := pkg.NewClient(host, username, password)
+	if err != nil {
+		logger.Fatal(err)
+	}
+	defer cli.Logout(context.TODO())
+
+	collect := pkg.NewCollector(cli, logger)
+	if err := collect.Start(); err != nil {
+		logger.Fatal(err)
+	}
+	defer collect.Stop()
+
+	handler := promhttp.Handler()
+
+	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		if err := collect.Scrape(); err != nil {
+			w.WriteHeader(500)
+			_, _ = w.Write([]byte(err.Error()))
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`<html>
+		_, _ = w.Write([]byte(`<html>
 			<head><title>VMware Exporter</title></head>
 			<body>
 			<h1>VMware Exporter</h1>
@@ -103,5 +73,45 @@ func main() {
 			</body>
 			</html>`))
 	})
-	logger.Fatal(http.ListenAndServe(listen, nil))
+
+	server := &http.Server{Addr: listen}
+	defer func() {
+		if err := server.Shutdown(context.TODO()); err != nil {
+			logger.Error(err)
+		}
+	}()
+
+	go func() {
+		logger.Infof("Exporter start on port %s", listen)
+		defer logger.Info("Exporter shutdown")
+		if err := server.ListenAndServe(); err != http.ErrServerClosed {
+			logger.Error(err)
+		}
+	}()
+
+	wait := make(chan os.Signal, 1)
+	signal.Notify(wait, syscall.SIGINT, syscall.SIGTERM)
+
+	<-wait
+}
+
+func env(key, def string) string {
+	if x := os.Getenv(key); x != "" {
+		return x
+	}
+	return def
+}
+
+func initLogger() *log.Logger {
+	logger := log.New()
+
+	level, err := log.ParseLevel(logLevel)
+	if err != nil {
+		level = log.InfoLevel
+	}
+
+	logger.SetLevel(level)
+	logger.Formatter = &log.TextFormatter{DisableTimestamp: false, FullTimestamp: true}
+
+	return logger
 }

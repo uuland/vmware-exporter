@@ -1,12 +1,13 @@
-package controllers
+package pkg
 
 import (
 	"context"
 	"fmt"
+	"net/url"
+
 	"github.com/vmware/govmomi"
 	"github.com/vmware/govmomi/vim25"
 	"github.com/vmware/govmomi/vim25/soap"
-	"net/url"
 )
 
 func newUrl(username, password string, u *url.URL) {
@@ -31,12 +32,12 @@ func newUrl(username, password string, u *url.URL) {
 	}
 }
 
-func NewClient(ctx context.Context, host, username, password string) (*govmomi.Client, error) {
+func NewClient(host, username, password string) (*govmomi.Client, error) {
 	var baseurl = fmt.Sprintf("https://username:password@%s"+vim25.Path, host)
 	u, err := soap.ParseURL(baseurl)
 	if err != nil {
 		return nil, err
 	}
 	newUrl(username, password, u)
-	return govmomi.NewClient(ctx, u, true)
+	return govmomi.NewClient(context.TODO(), u, true)
 }
