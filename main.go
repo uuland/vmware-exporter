@@ -11,7 +11,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
 
-	"vmware-exporter/pkg"
+	"vmware-exporter/internal/collector"
+	"vmware-exporter/internal/helper"
+	_ "vmware-exporter/internal/metrics"
 )
 
 var (
@@ -19,6 +21,7 @@ var (
 	host     = ""
 	username = ""
 	password = ""
+	features = "host"
 	logLevel = "info"
 )
 
@@ -27,6 +30,7 @@ func main() {
 	flag.StringVar(&host, "host", env("ESX_HOST", host), "ESX host addr")
 	flag.StringVar(&username, "username", env("ESX_USERNAME", username), "user for ESX")
 	flag.StringVar(&password, "password", env("ESX_PASSWORD", password), "password for ESX")
+	flag.StringVar(&features, "features", env("ESX_FEATURES", features), "enabled collectors")
 	flag.StringVar(&logLevel, "logLevel", env("ESX_LOG", logLevel), "Log level")
 	flag.Parse()
 
@@ -42,14 +46,14 @@ func main() {
 		logger.Fatal("Yor must configured system env ESX_PASSWORD or key -password")
 	}
 
-	cli, err := pkg.NewClient(host, username, password)
+	cli, err := helper.NewClient(host, username, password)
 	if err != nil {
 		logger.Fatal(err)
 	}
 	defer cli.Logout(context.TODO())
 
-	collect := pkg.NewCollector(cli, logger)
-	if err := collect.Start(); err != nil {
+	collect := collector.NewService(cli, logger)
+	if err := collect.Start(features); err != nil {
 		logger.Fatal(err)
 	}
 	defer collect.Stop()

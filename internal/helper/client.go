@@ -1,4 +1,4 @@
-package pkg
+package helper
 
 import (
 	"context"
@@ -9,6 +9,16 @@ import (
 	"github.com/vmware/govmomi/vim25"
 	"github.com/vmware/govmomi/vim25/soap"
 )
+
+func NewClient(host, username, password string) (*govmomi.Client, error) {
+	var baseurl = fmt.Sprintf("https://username:password@%s"+vim25.Path, host)
+	u, err := soap.ParseURL(baseurl)
+	if err != nil {
+		return nil, err
+	}
+	newUrl(username, password, u)
+	return govmomi.NewClient(context.TODO(), u, true)
+}
 
 func newUrl(username, password string, u *url.URL) {
 	if username != "" {
@@ -30,14 +40,4 @@ func newUrl(username, password string, u *url.URL) {
 		}
 		u.User = url.UserPassword(username, password)
 	}
-}
-
-func NewClient(host, username, password string) (*govmomi.Client, error) {
-	var baseurl = fmt.Sprintf("https://username:password@%s"+vim25.Path, host)
-	u, err := soap.ParseURL(baseurl)
-	if err != nil {
-		return nil, err
-	}
-	newUrl(username, password, u)
-	return govmomi.NewClient(context.TODO(), u, true)
 }
